@@ -288,7 +288,7 @@ def has_text_layer(text: str, pages: int) -> bool:
       2. Посчитать, сколько символов приходится на страницу: len(text) / pages.
       3. Вернуть True, если символов на страницу не меньше MIN_CHARS_PER_PAGE.
     """
-    return True
+    return pages > 0 and len(text) / pages >= MIN_CHARS_PER_PAGE
 
 
 # ====================================================================
