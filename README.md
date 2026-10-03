@@ -1,7 +1,6 @@
 # ai-engineering-course
 
 ## Troubleshooting
-
 ### 'ascii' codec can't encode characters`
 **Что видел:** ошибка при запуске после того, как вписал сломанный ключ.
 **Почему:** в `GIGACHAT_CREDENTIALS` попали русские буквы, а ключ уходит в
