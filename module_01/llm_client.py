@@ -52,7 +52,9 @@ MAX_TOKENS = 500
 #   Попробуй минимум два варианта, например:
 #     "Ты - строгий технический специалист, отвечаешь кратко и по делу."
 #     "Ты - терпеливый наставник, объясняешь как новичку, с примерами."
-SYSTEM_PROMPT = "Ты - помощник инженера промышленного предприятия."
+SYSTEM_PROMPT = "Ты - строгий технический специалист, отвечаешь кратко и по делу."
+SYSTEM_PROMPT = "Ты - терпеливый наставник, объясняешь как новичку, с примерами."
+
 
 
 # ====================================================================
@@ -139,11 +141,16 @@ def ask_llm(question: str) -> tuple:
       3. Строку с latency и return не трогай — она уже написана.
     """
     start = time.time()
-
-    # --- заменить этот блок на try/except (см. пункты 1-3 выше) ---
-    result = call_gigachat(question)
-    provider = "GigaChat"
-    # --- конец блока ---
+    try:
+        # --- заменить этот блок на try/except (см. пункты 1-3 выше) ---
+        result = call_gigachat(question)
+        provider = "GigaChat"
+    except Exception as e:
+        print(f"[!] GigaChat недоступен: {e}")
+        print("    Переключаюсь на резерный провайдер HuggingFace...")
+        result = call_huggingface(question)
+        provider = "HuggingFace"
+        # --- конец блока ---
 
     latency = time.time() - start
     return result, provider, latency
