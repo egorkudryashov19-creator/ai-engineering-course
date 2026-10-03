@@ -73,17 +73,33 @@ class Ticket(BaseModel):
     # если данных в обращении нет. Плохое описание = плохое извлечение.
 
     category: Literal["регламент", "доступ", "инцидент", "документация"] = Field(
-        description="TODO 1: что это за поле и как выбрать категорию"
+        description=(
+            "категория обращения. регламент — спрашивают о порядке действий или сроках. "
+            "доступ — просят выдать или восстановить доступ. "
+            "инцидент — оборудование сломалось, встало или работает неправильно. "
+            "документация — просят найти или прислать документ."
+        )
     )
 
     equipment_id: Optional[str] = Field(
         default=None,
-        description="TODO 1: идентификатор оборудования. Подскажи модели: приводить к виду "
-                    "из реестра (КМ-101, П-7, ЭЛОУ-АВТ-6...); что ставить, если не назван",
+        description=(
+            "Идентификатор оборудования строго как в реестре предприятия: "
+            "КМ-101, НМ-205, П-7, ЭЛОУ-АВТ-6, Линия-3. Приведи написание к такому виду. "
+            "Если оборудование в обращении не названо — null. Не угадывай и не выводи "
+            "идентификатор из общих слов вроде «станок» или «в цеху»."
+        ),
     )
 
     priority: Literal["низкий", "средний", "высокий"] = Field(
-        description="TODO 1: как определить приоритет по тексту обращения"
+        description=(
+            "приоритет заявки. "
+            "высокий — остановлено производство или есть риск для людей. "
+            "средний — мешает работать, но обходной путь есть. "
+            "низкий — не мешает работе, можно отложить. "
+            "Если приоритет в обращении не назван и непонятен из контекста — "
+            "ставь 'средний'."
+        )
     )
 
     summary: str = Field(
@@ -111,7 +127,15 @@ class Ticket(BaseModel):
 
         Сейчас функция пропускает всё подряд — это и надо исправить.
         """
-        return value
+        if value is None:
+            return None
+        key = _norm(value)                     
+        if key in REGISTRY_LOOKUP:
+            return REGISTRY_LOOKUP[key]              
+        raise ValueError(
+            f"оборудование «{value}» отсутствует в реестре — заявка на ручную проверку"
+        )    
+
 
 
 # ====================================================================
@@ -155,14 +179,27 @@ def parse_ticket(raw: str) -> Optional[Ticket]:
     кривое обращение не должно ронять обработку всей очереди.
 
     Что нужно сделать:
-      1. Если extract_json_block вернул None — вернуть None.
-      2. json.loads обернуть в try/except json.JSONDecodeError -> вернуть None.
-      3. Создание Ticket(**data) обернуть в try/except ValidationError:
-         напечатать причину (e.errors()[0]["msg"]) и вернуть None.
+    1. Если extract_json_block вернул None — вернуть None.
+    2. json.loads обернуть в try/except json.JSONDecodeError -> вернуть None.
+    3. Создание Ticket(**data) обернуть в try/except ValidationError:
+       напечатать причину (e.errors()[0]["msg"]) и вернуть None.
     """
     block = extract_json_block(raw)
-    data = json.loads(block)
-    return Ticket(**data)
+    if block is None:
+        print("[схема] модель ответила не JSON")
+        return None
+
+    try:
+        data = json.loads(block)
+    except json.JSONDecodeError:
+        print("[схема] JSON битый, разобрать не удалось")
+        return None
+
+    try:
+        return Ticket(**data)
+    except ValidationError as e:
+        print(f"[схема] {e.errors()[0]['msg']}")
+        return None
 
 
 def ask_model(text: str) -> str:
