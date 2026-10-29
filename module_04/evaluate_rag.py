@@ -33,6 +33,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from gigachat import GigaChat
 from sentence_transformers import SentenceTransformer
+from rag_assistant import ask_model
 
 import ingestion
 from qdrant_connect import make_client
@@ -94,27 +95,30 @@ JUDGE_SYSTEM = (
 # ====================================================================
 
 def classify(question: dict, hits, result: dict) -> str:
-    """TODO 1: оценка ответа по разметке eval-набора.
-
-    Верни одну из меток:
-      - ok
-      - hallucination
-      - over_refusal
-      - retrieval_error
-      - generation_error
-
-    Логика:
-      1) Если question["in_corpus"] == False:
-         - ответ == REFUSAL_TEXT -> ok
-         - иначе -> hallucination
-      2) Если вопрос из корпуса, но ассистент отказал (REFUSAL_TEXT) -> over_refusal
-      3) Проверить источники: хотя бы один doc_id из question["expected"]
-         должен быть в result["sources"], иначе -> retrieval_error
-      4) Проверить фактоид: question["must_contain"] должен встречаться в answer
-         (без учёта регистра), иначе -> generation_error
-      5) Иначе -> ok
-    """
-    # TODO 1: замени заглушку на реализацию по шагам выше
+    """Оценка ответа по разметке eval-набора."""
+    
+    if not question.get("in_corpus", False):
+        if result.get("answer", "").strip() == REFUSAL_TEXT:
+            return "ok"
+        else:
+            return "hallucination"
+            
+    if result.get("answer", "").strip() == REFUSAL_TEXT:
+        return "over_refusal"
+        
+    expected_docs = question.get("expected", [])
+    found_sources = result.get("sources", [])
+    
+    source_found = any(doc in found_sources for doc in expected_docs)
+    if not source_found:
+        return "retrieval_error"
+        
+    must_contain = question.get("must_contain", "")
+    answer_text = result.get("answer", "").lower()
+    
+    if must_contain.lower() not in answer_text:
+        return "generation_error"
+        
     return "ok"
 
 
@@ -122,28 +126,44 @@ def classify(question: dict, hits, result: dict) -> str:
 #  LLM-КАК-СУДЬЯ
 # ====================================================================
 
+import json
+import re
+
+import json
+import re
+
 def llm_judge(question: str, context: str, answer_text: str) -> dict:
-    """TODO 2: попросить GigaChat оценить ответ ассистента как судья.
-
-    Что сделать:
-      1) Собрать user_msg из question/context/answer_text.
-      2) Вызвать GigaChat с system=JUDGE_SYSTEM и user=user_msg.
-      3) Распарсить JSON из ответа модели и вернуть dict.
-      4) В except вернуть fallback:
-         {"overall_verdict": "error", "reason": str(e)}
-
-    Ожидаемые поля в словаре судьи:
-      answer_relevance, context_relevance, answer_faithfulness,
-      overall_verdict, reason
-    """
-    # TODO 2: замени заглушку на реальный вызов судьи
-    return {
-        "answer_relevance": "low",
-        "context_relevance": "low",
-        "answer_faithfulness": "low",
-        "overall_verdict": "error",
-        "reason": "TODO 2: llm_judge не реализован",
-    }
+    """Попросить GigaChat оценить ответ ассистента как судья."""
+    
+    user_msg = (
+        f"ВОПРОС:\n{question}\n\n"
+        f"КОНТЕКСТ:\n{context}\n\n"
+        f"ОТВЕТ АССИСТЕНТА:\n{answer_text}\n\n"
+        "Оцени ответ ассистента строго по формату JSON."
+    )
+    
+    messages = [
+        {"role": "system", "content": JUDGE_SYSTEM},
+        {"role": "user", "content": user_msg}
+    ]
+    
+    try:
+        raw_response = ask_model(messages=messages, max_tokens=500)
+        
+        json_match = re.search(r'\{.*\}', raw_response, re.DOTALL)
+        if not json_match:
+            raise ValueError("Модель не вернула JSON")
+            
+        return json.loads(json_match.group(0))
+        
+    except Exception as e:
+        return {
+            "answer_relevance": "low",
+            "context_relevance": "low",
+            "answer_faithfulness": "low",
+            "overall_verdict": "error",
+            "reason": f"Ошибка вызова судьи: {str(e)}"
+        }
 
 
 # ====================================================================
@@ -296,71 +316,61 @@ def _print_judge_report(rows: list) -> None:
 
 def sweep_chunking(client, model, alias: str):
     """Автоматически перебирает параметры нарезки и сравнивает качество двумя способами.
-
-    Эту функцию запускают командой:  python evaluate_rag.py --sweep
-    Вручную запускать ingestion.py несколько раз не нужно — функция сама
-    пересобирает индекс Qdrant на каждой комбинации параметров.
-
-    TODO 3: сейчас функция только печатает шапку таблицы — заглушка.
-    Напиши цикл по CHUNK_COMBOS. На каждой итерации:
-      1. ingestion.CHUNK_SIZE = size; ingestion.OVERLAP = overlap
-      2. ingestion.build_index(client, model)  — пересобирает индекс, возвращает manifest
-      3. counts = run_eval(client, model, alias, verbose=False)
-         Посчитай для вопросов из базы (in_corpus=True):
-           - верных по разметке:  counts["markup"].get("ok", 0)
-           - верных по судье:     counts["judge"].get("ok", 0)
-      4. Выведи строку таблицы (см. формат ниже).
-
-    После цикла верни параметры к 600/150 и пересобери индекс ещё раз —
-    иначе следующий обычный запуск будет работать на последних параметрах.
-
-    Ожидаемый вид таблицы (8 вопросов из базы из 11 всего):
-
-        Размер чанка / перекрытие  | чанков |  ✓ по разметке | ✓ по судье
-        ──────────────────────────────────────────────────────────────────────
-        1000 / 200                 |    563 |          6 / 8 |      5 / 8
-         600 / 0                   |    715 |          7 / 8 |      7 / 8
-         600 / 150                 |    921 |          7 / 8 |      7 / 8
-         400 / 0                   |   1028 |          5 / 8 |      5 / 8
-         400 / 100                 |   1337 |          7 / 8 |      6 / 8
-         300 / 150                 |   2600 |          4 / 8 |      3 / 8
-
-    Разметка и судья могут расходиться: разметка проверяет, есть ли нужная
-    строка в ответе; судья оценивает, насколько ответ полезен и честен.
     """
     in_corpus_total = sum(1 for q in QUESTIONS if q["in_corpus"])
     col = f"{'Размер чанка / перекрытие':<26}"
     print(f"\n  {col} | {'чанков':>7} | {'✓ по разметке':>14} | {'✓ по судье':>10}")
     print("  " + _SEP[:72])
+    
     original = (ingestion.CHUNK_SIZE, ingestion.OVERLAP)
-    # TODO 3: перебор здесь
-    ingestion.CHUNK_SIZE, ingestion.OVERLAP = original
+    
+    for size, overlap in CHUNK_COMBOS:
+        ingestion.CHUNK_SIZE = size
+        ingestion.OVERLAP = overlap
+        
+        manifest, chunks = ingestion.build_index(client, model)
+        chunks_count = len(chunks)
+        
+        counts = run_eval(client, model, alias, verbose=False)
+        
+        ok_markup = counts["markup"].get("ok", 0)
+        ok_judge = counts["judge"].get("ok", 0)
+        
+        combo_str = f"{size} / {overlap}"
+        print(f"  {combo_str:<26} | {chunks_count:>7} | {ok_markup:>7} / {in_corpus_total:<2} | {ok_judge:>5} / {in_corpus_total}")
 
+    ingestion.CHUNK_SIZE, ingestion.OVERLAP = original
+    ingestion.build_index(client, model)
+    print(f"\n  Параметры возвращены к стандартным: {original[0]} / {original[1]}. Индекс пересобран.")
 
 # ====================================================================
 #  КОНФЛИКТ ВЕРСИЙ ОДНОГО РЕГЛАМЕНТА
 # ====================================================================
 
 def resolve_conflicts(hits):
-    """Если в выдаче несколько версий одного регламента — оставляет свежую.
+    """Если в выдаче несколько версий одного регламента — оставляет свежую."""
+    
+    if not hits:
+        return hits
 
-    TODO 4: сейчас возвращает hits без изменений — заглушка. С ней
-    demo_conflict() покажет саму проблему, но не решение.
+    groups = {}
+    for h in hits:
+        doc_id = h.payload.get("doc_id", "")
+        base_id = doc_id.replace("-OLD", "")
+        
+        if base_id not in groups:
+            groups[base_id] = []
+        groups[base_id].append(h)
 
-    В data/corpus_conflict/REGL-GEN-01-OLD.json лежит устаревшая (version
-    2.0, дата 2022-05-14) редакция регламента, который в основном корпусе
-    существует как REGL-GEN-01 (version 3.1, дата 2024-01-10) — тот же
-    регламент, тот же номер РГЛ-НО-014, другие сроки. Оба документа
-    отвечают на один вопрос по смыслу — Qdrant не знает, что один из них
-    отменён, и вернёт оба, если оба лежат в индексе.
+    best_hits = set()
+    for base_id, group in groups.items():
+        if len(group) == 1:
+            best_hits.add(id(group[0]))
+        else:
+            best_hit = max(group, key=lambda h: h.payload.get("date", "0000-00-00"))
+            best_hits.add(id(best_hit))
 
-    Что сделать: сгруппировать hits по базовому doc_id (REGL-GEN-01-OLD
-    и REGL-GEN-01 — одна группа: суффикс -OLD не признак другой группы);
-    в каждой группе оставить запись с максимальным payload["date"]
-    (строки ГГГГ-ММ-ДД сравниваются как даты), остальные выбросить.
-    Порядок и score оставшихся точек не менять.
-    """
-    return hits
+    return [h for h in hits if id(h) in best_hits]
 
 
 def demo_conflict(client, model, alias: str):
