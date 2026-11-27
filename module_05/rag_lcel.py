@@ -69,14 +69,18 @@ def trim_history(history: list, max_messages: int = WINDOW) -> list:
     """Скользящее окно: оставляет последние max_messages сообщений.
 
     TODO 1. Требования:
-      * вернуть НОВЫЙ список из последних max_messages сообщений
-        (исходный список не менять);
-      * диалог после обрезки должен начинаться с вопроса человека: пока
-        первым элементом стоит AIMessage (ответ без своего вопроса) —
-        отбрасывай его;
-      * короткая история (не длиннее окна) возвращается целиком.
+    * вернуть НОВЫЙ список из последних max_messages сообщений
+      (исходный список не менять);
+    * диалог после обрезки должен начинаться с вопроса человека: пока
+      первым элементом стоит AIMessage (ответ без своего вопроса) —
+      отбрасывай его;
+    * короткая история (не длиннее окна) возвращается целиком.
     """
-    raise NotImplementedError("TODO 1: скользящее окно истории")
+
+    trimmed = history[-max_messages:]
+    while trimmed and isinstance(trimmed[0], AIMessage):
+        trimmed = trimmed[1:]
+    return trimmed
 
 
 # ====================================================================
@@ -91,7 +95,13 @@ def trim_history(history: list, max_messages: int = WINDOW) -> list:
 # вместо местоимений и отсылок («у него», «а для этого же оборудования»)
 # должны стоять конкретные названия и коды из истории.
 # ------------------------------------------------------------------
-CONDENSE_SYSTEM = ""
+CONDENSE_SYSTEM = (
+    "Ниже диалог инженера с ассистентом по базе знаний предприятия. "
+    "Переформулируй ПОСЛЕДНИЙ вопрос инженера так, чтобы он был понятен "
+    "без диалога: подставь вместо местоимений и отсылок («у него», «а для "
+    "этого же оборудования») конкретные названия и коды из истории. "
+    "Верни ТОЛЬКО переформулированный вопрос, без пояснений."
+)
 
 CONDENSE_PROMPT = ChatPromptTemplate.from_messages([
     ("system", CONDENSE_SYSTEM),
@@ -105,7 +115,7 @@ def build_condense_chain(model):
 
     TODO 3. Собери цепочку из CONDENSE_PROMPT, модели и StrOutputParser().
     """
-    raise NotImplementedError("TODO 3: цепочка переформулировки")
+    return CONDENSE_PROMPT | model | StrOutputParser()
 
 
 # ====================================================================
@@ -116,14 +126,28 @@ def dialog_step(question: str, history: list, model) -> dict:
     """Один шаг диалога. Возвращает {"answer", "sources", "standalone"}.
 
     TODO 4. Правила:
-      * истории нет -> вопрос уже самостоятельный, модель НЕ вызывается;
-      * история есть -> вызови condense-цепочку с окном истории:
-        {"history": trim_history(history), "question": question},
-        результату сделай .strip() — это самостоятельный вопрос;
-      * отправь самостоятельный вопрос в rag_answer(...) и верни
-        {"answer": ..., "sources": ..., "standalone": самостоятельный вопрос}.
+    * истории нет -> вопрос уже самостоятельный, модель НЕ вызывается;
+    * история есть -> вызови condense-цепочку с окном истории:
+      {"history": trim_history(history), "question": question},
+      результат сделай .strip() — это самостоятельный вопрос;
+    * отправь самостоятельный вопрос в rag_answer(...) и верни
+      {"answer": ..., "sources": ..., "standalone": самостоятельный вопрос}.
     """
-    raise NotImplementedError("TODO 4: шаг диалога")
+    if not history:
+        standalone = question
+    else:
+        condense = build_condense_chain(model)
+        standalone = condense.invoke({
+            "history": trim_history(history),
+            "question": question,
+        }).strip()
+
+    result = rag_answer(standalone)
+    return {
+        "answer": result["answer"],
+        "sources": result["sources"],
+        "standalone": standalone,
+    }
 
 
 def run_dialog():
